@@ -21,6 +21,7 @@
 #include "cli/setup_cmds.h"
 #include "cli/visualizer.h"
 #include "cli/tui_app.h"
+#include "cli/cmd_proxy.h"
 #include "pipeline/orchestrator.h"
 #include "engines/metalrt_loader.h"
 #include "audio/audio_io.h"
@@ -958,6 +959,50 @@ int main(int argc, char** argv) {
     }
     if (args.command == "engine")      return cmd_engine(args);
     if (args.command == "personality") return cmd_personality(args);
+    if (args.command == "proxy") {
+        // Parse proxy-specific arguments
+        rcli::ProxyConfig proxy_config;
+        for (int i = 2; i < argc; i++) {
+            std::string a = argv[i];
+            if ((a == "--socket" || a == "-s") && i + 1 < argc) {
+                proxy_config.socket_path = argv[++i];
+            } else if ((a == "--models" || a == "-m") && i + 1 < argc) {
+                proxy_config.models_dir = argv[++i];
+            } else if ((a == "--tts-model" || a == "--tts") && i + 1 < argc) {
+                proxy_config.tts_model = argv[++i];
+            } else if ((a == "--tts-voice" || a == "--voice") && i + 1 < argc) {
+                proxy_config.tts_voice = argv[++i];
+            } else if ((a == "--stt-model" || a == "--stt") && i + 1 < argc) {
+                proxy_config.stt_model = argv[++i];
+            } else if (a == "--vad-threshold" && i + 1 < argc) {
+                proxy_config.vad_threshold = std::stof(argv[++i]);
+            } else if (a == "--gpu-layers" && i + 1 < argc) {
+                proxy_config.gpu_layers = std::stoi(argv[++i]);
+            } else if (a == "--verbose" || a == "-v") {
+                proxy_config.verbose = true;
+            } else if (a == "--help" || a == "-h") {
+                fprintf(stderr,
+                    "\n%s%s  rcli proxy%s — Run RCLI as a voice proxy server\n\n"
+                    "  Options:\n"
+                    "    -s, --socket PATH       Unix socket path (default: ~/.opencode/rcli-voice.sock)\n"
+                    "    -m, --models DIR        Models directory (default: ~/Library/RCLI/models)\n"
+                    "        --tts-model MODEL   TTS model: kokoro-en, kokoro-multi, piper-lessac (default: kokoro-en)\n"
+                    "        --tts-voice VOICE   TTS voice name\n"
+                    "        --stt-model MODEL   STT model: zipformer, whisper-base (default: zipformer)\n"
+                    "        --vad-threshold N   VAD threshold 0.0-1.0 (default: 0.5)\n"
+                    "        --gpu-layers N      GPU layers for LLM (default: 99)\n"
+                    "    -v, --verbose           Enable verbose output\n"
+                    "    -h, --help              Show this help\n\n",
+                    color::bold, color::orange, color::reset);
+                return 0;
+            }
+        }
+        // Use default models dir if not specified
+        if (proxy_config.models_dir.empty()) {
+            proxy_config.models_dir = default_models_dir();
+        }
+        return rcli::cmd_proxy(proxy_config);
+    }
 
     // Hidden test command: exercises streaming LLM → TTS pipeline
     if (args.command == "stream-test") {

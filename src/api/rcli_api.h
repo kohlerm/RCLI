@@ -57,6 +57,10 @@ int rcli_is_ready(RCLIHandle handle);
 // Start listening (mic → STT → LLM → TTS → speaker)
 int rcli_start_listening(RCLIHandle handle);
 
+// Start STT-only mode (mic → streaming STT with transcript callbacks, no LLM/TTS)
+// Use this for proxy mode where an external LLM handles inference.
+int rcli_start_stt_only(RCLIHandle handle);
+
 // Stop listening
 int rcli_stop_listening(RCLIHandle handle);
 

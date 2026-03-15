@@ -961,6 +961,23 @@ bool Orchestrator::start_live() {
     return true;
 }
 
+bool Orchestrator::start_stt_only() {
+    if (live_running_.load()) return false;
+    live_running_.store(true, std::memory_order_release);
+    live_history_.clear();
+
+    // Match start_live() behavior: start audio first, then set LISTENING,
+    // then launch STT thread (without LLM/TTS threads).
+    audio_.start();
+    set_state(PipelineState::LISTENING);
+
+    // STT thread only — no LLM/TTS threads
+    stt_thread_ = std::thread([this]() { stt_thread_fn(); });
+
+    LOG_DEBUG("Pipeline", "STT-only mode started");
+    return true;
+}
+
 void Orchestrator::stop_live() {
     live_running_.store(false, std::memory_order_release);
     text_cv_.notify_all();
@@ -1079,8 +1096,18 @@ void Orchestrator::stt_thread_fn() {
 
     std::vector<float> chunk_buf(1600);
     std::string last_partial;
+    const bool stt_only_mode = !llm_thread_.joinable();
+
+    // In proxy (STT-only) mode, keep a rolling audio buffer so finals can be
+    // refined with offline STT (Whisper/Nemo) for better accuracy.
+    std::vector<float> stt_only_audio_buf;
+    constexpr size_t STT_ONLY_AUDIO_MAX = 16000 * 15;  // 15s at 16kHz
+    if (stt_only_mode) {
+        stt_only_audio_buf.reserve(STT_ONLY_AUDIO_MAX);
+    }
 
     constexpr float ENERGY_FLOOR = 0.005f;
+    constexpr float STT_ONLY_ENERGY_FLOOR = 0.0015f;
 
     // Barge-in: consecutive speech frames counter (debounce)
     int barge_in_speech_frames = 0;
@@ -1204,8 +1231,24 @@ void Orchestrator::stt_thread_fn() {
 
         size_t avail = capture_rb_->available_read();
         size_t to_read = std::min(avail, (size_t)1600);
+
         if (to_read > 0) {
             capture_rb_->read(chunk_buf.data(), to_read);
+
+            if (stt_only_mode) {
+                if (stt_only_audio_buf.size() + to_read > STT_ONLY_AUDIO_MAX) {
+                    size_t overflow = (stt_only_audio_buf.size() + to_read) - STT_ONLY_AUDIO_MAX;
+                    if (overflow >= stt_only_audio_buf.size()) {
+                        stt_only_audio_buf.clear();
+                    } else {
+                        stt_only_audio_buf.erase(stt_only_audio_buf.begin(),
+                                                 stt_only_audio_buf.begin() + overflow);
+                    }
+                }
+                stt_only_audio_buf.insert(stt_only_audio_buf.end(),
+                                          chunk_buf.begin(),
+                                          chunk_buf.begin() + static_cast<long>(to_read));
+            }
 
             // Compute chunk energy (RMS)
             float sum_sq = 0.0f;
@@ -1429,11 +1472,19 @@ void Orchestrator::stt_thread_fn() {
                 goto skip_stt_feed;
             }
 
-            // --- Normal STT feeding (non-voice-mode LISTENING / BARGE_IN states) ---
+            // --- Normal STT feeding ---
             {
-                bool has_energy = (rms > ENERGY_FLOOR);
+                bool stt_only = !llm_thread_.joinable();  // proxy mode
+                float floor = stt_only ? STT_ONLY_ENERGY_FLOOR : ENERGY_FLOOR;
+                bool has_energy = (rms > floor);
+
                 if (has_energy || vad_speech) {
                     stt_.feed_audio(chunk_buf.data(), (int)to_read);
+                } else if (stt_only) {
+                    // Keep stream timing continuous in proxy mode so endpoint
+                    // logic can finalize even when ambient signal is quiet.
+                    static thread_local std::vector<float> silence_buf(1600, 0.0f);
+                    stt_.feed_audio(silence_buf.data(), (int)to_read);
                 }
             }
         }
@@ -1462,20 +1513,55 @@ void Orchestrator::stt_thread_fn() {
                     last_partial = result.text;
                 }
 
-                if (text_changed && transcript_cb_) {
-                    transcript_cb_(result.text, result.is_final);
+                std::string emit_text = result.text;
+                if (result.is_final && stt_only_mode && !stt_only_audio_buf.empty()) {
+                    std::string refined;
+                    if (metalrt_stt_initialized_) {
+                        refined = metalrt_stt_.transcribe(
+                            stt_only_audio_buf.data(),
+                            static_cast<int>(stt_only_audio_buf.size()),
+                            16000);
+                    } else if (offline_stt_.is_initialized()) {
+                        refined = offline_stt_.transcribe(
+                            stt_only_audio_buf.data(),
+                            static_cast<int>(stt_only_audio_buf.size()));
+                    }
+
+                    // Trim refined text
+                    if (!refined.empty()) {
+                        auto first = refined.find_first_not_of(" \t\n\r");
+                        auto last = refined.find_last_not_of(" \t\n\r");
+                        if (first == std::string::npos) {
+                            refined.clear();
+                        } else {
+                            refined = refined.substr(first, last - first + 1);
+                        }
+                    }
+
+                    if (!refined.empty()) {
+                        emit_text = refined;
+                    }
+                }
+
+                // Always emit finals, even if final text equals the last partial.
+                // Otherwise clients never receive an is_final=true event.
+                if ((text_changed || result.is_final) && transcript_cb_) {
+                    transcript_cb_(emit_text, result.is_final);
                 }
 
                 if (result.is_final) {
-                    LOG_DEBUG("STT", "Final: \"%s\"", result.text.c_str());
+                    LOG_DEBUG("STT", "Final: \"%s\"", emit_text.c_str());
                     {
                         std::lock_guard<std::mutex> lock(text_mutex_);
-                        pending_text_ = result.text;
+                        pending_text_ = emit_text;
                         text_ready_ = true;
                     }
                     text_cv_.notify_one();
                     stt_.reset();
                     last_partial.clear();
+                    if (stt_only_mode) {
+                        stt_only_audio_buf.clear();
+                    }
 
                     // Clear barge-in trigger so LLM thread knows it's fresh input
                     barge_in_triggered_.store(false, std::memory_order_release);

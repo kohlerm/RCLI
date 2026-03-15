@@ -671,6 +671,13 @@ int rcli_start_listening(RCLIHandle handle) {
     return engine->pipeline.start_live() ? 0 : -1;
 }
 
+int rcli_start_stt_only(RCLIHandle handle) {
+    if (!handle) return -1;
+    auto* engine = static_cast<RCLIEngine*>(handle);
+    if (!engine->initialized) return -1;
+    return engine->pipeline.start_stt_only() ? 0 : -1;
+}
+
 int rcli_stop_listening(RCLIHandle handle) {
     if (!handle) return -1;
     auto* engine = static_cast<RCLIEngine*>(handle);

@@ -73,6 +73,8 @@ public:
     // --- Live mode pipeline ---
     // Start live pipeline (mic → STT → LLM → TTS → speaker)
     bool start_live();
+    // Start STT-only live mode (mic → STT with streaming transcripts, no LLM/TTS threads)
+    bool start_stt_only();
     void stop_live();
 
     // --- Push-to-talk helpers ---

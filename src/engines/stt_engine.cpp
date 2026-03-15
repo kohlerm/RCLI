@@ -40,8 +40,8 @@ bool SttEngine::init(const SttConfig& config) {
     c.decoding_method                 = "greedy_search";
     c.max_active_paths                = 4;
     c.enable_endpoint                 = 1;
-    c.rule1_min_trailing_silence      = 2.4f;
-    c.rule2_min_trailing_silence      = 1.2f;
+    c.rule1_min_trailing_silence      = 1.8f;   // less aggressive to reduce premature finals/noise
+    c.rule2_min_trailing_silence      = 1.0f;   // faster than default, but more stable than 0.8f
     c.rule3_min_utterance_length      = 20.0f;
 
     recognizer_ = SherpaOnnxCreateOnlineRecognizer(&c);
@@ -158,27 +158,37 @@ void SttEngine::process_tick() {
             last_text_ = text;
             has_new_result_.store(true, std::memory_order_release);
 
-            bool is_endpoint = SherpaOnnxOnlineStreamIsEndpoint(recognizer_, stream_);
-
             if (callback_) {
                 TextSegment seg;
                 seg.text = text;
-                seg.is_final = is_endpoint;
+                seg.is_final = false;  // partials only here; finals go through endpoint below
                 seg.confidence = 1.0f;
                 seg.timestamp_us = now_us();
                 callback_(seg);
             }
-
-            // Buffer endpoint result BEFORE resetting, so get_result()
-            // can still retrieve the final text after the stream is reset.
-            if (is_endpoint) {
-                pending_final_text_ = text;
-                pending_final_ = true;
-                SherpaOnnxOnlineStreamReset(recognizer_, stream_);
-                last_text_.clear();
-            }
         }
         SherpaOnnxDestroyOnlineRecognizerResult(r);
+    }
+
+    // Check endpoint EVERY tick (not just when text changes) — the trailing
+    // silence counter advances even when no new tokens are produced, so we
+    // must poll IsEndpoint independently of text changes.
+    if (!last_text_.empty() && SherpaOnnxOnlineStreamIsEndpoint(recognizer_, stream_)) {
+        pending_final_text_ = last_text_;
+        pending_final_ = true;
+        has_new_result_.store(true, std::memory_order_release);
+
+        if (callback_) {
+            TextSegment seg;
+            seg.text = last_text_;
+            seg.is_final = true;
+            seg.confidence = 1.0f;
+            seg.timestamp_us = now_us();
+            callback_(seg);
+        }
+
+        SherpaOnnxOnlineStreamReset(recognizer_, stream_);
+        last_text_.clear();
     }
 }
 
