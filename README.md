@@ -186,11 +186,11 @@ You can test the Unix socket proxy directly using the included script:
 rcli proxy --socket ~/.opencode/rcli-voice.sock --models ~/Library/RCLI/models
 
 # 2) In another terminal, run test client modes
-python3 scripts/proxy_test.py listen --duration 20
-python3 scripts/proxy_test.py listen-file --audio ~/Desktop/test.m4a --show-phrases
-python3 scripts/proxy_test.py segment-file --audio ~/Desktop/test-with-pauses.m4a
-python3 scripts/proxy_test.py speak --text "Hello from proxy test"
-python3 scripts/proxy_test.py repl
+python3 scripts/proxy/proxy_test.py listen --duration 20
+python3 scripts/proxy/proxy_test.py listen-file --audio ~/Desktop/test.m4a --show-phrases
+python3 scripts/proxy/proxy_test.py segment-file --audio ~/Desktop/test-with-pauses.m4a
+python3 scripts/proxy/proxy_test.py speak --text "Hello from proxy test"
+python3 scripts/proxy/proxy_test.py repl
 ```
 
 Tip: `listen-file` lets you replay a saved recording through your speakers so
