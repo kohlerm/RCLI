@@ -40,8 +40,8 @@ bool SttEngine::init(const SttConfig& config) {
     c.decoding_method                 = "greedy_search";
     c.max_active_paths                = 4;
     c.enable_endpoint                 = 1;
-    c.rule1_min_trailing_silence      = 2.4f;   // keep unpunctuated phrase finals conservative
-    c.rule2_min_trailing_silence      = 0.8f;   // split punctuated phrases on shorter pauses
+    c.rule1_min_trailing_silence      = 2.0f;   // avoid over-merging separate utterances
+    c.rule2_min_trailing_silence      = 0.7f;   // split punctuated phrases on short pauses
     c.rule3_min_utterance_length      = 20.0f;
 
     recognizer_ = SherpaOnnxCreateOnlineRecognizer(&c);
