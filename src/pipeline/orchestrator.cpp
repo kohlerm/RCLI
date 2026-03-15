@@ -1107,7 +1107,8 @@ void Orchestrator::stt_thread_fn() {
     }
 
     constexpr float ENERGY_FLOOR = 0.005f;
-    constexpr float STT_ONLY_ENERGY_FLOOR = 0.0005f;
+    constexpr float STT_ONLY_START_FLOOR = 0.0005f;   // easier first-word pickup
+    constexpr float STT_ONLY_ACTIVE_FLOOR = 0.0012f;  // avoid sticky utterances on ambient noise
 
     // Barge-in: consecutive speech frames counter (debounce)
     int barge_in_speech_frames = 0;
@@ -1475,7 +1476,13 @@ void Orchestrator::stt_thread_fn() {
             // --- Normal STT feeding ---
             {
                 bool stt_only = !llm_thread_.joinable();  // proxy mode
-                float floor = stt_only ? STT_ONLY_ENERGY_FLOOR : ENERGY_FLOOR;
+                float floor = ENERGY_FLOOR;
+                if (stt_only) {
+                    // In proxy mode: use a lower floor before the first partial arrives
+                    // (better start-word pickup), then a higher floor once an utterance
+                    // is active so ambient noise doesn't prevent endpoint finalization.
+                    floor = last_partial.empty() ? STT_ONLY_START_FLOOR : STT_ONLY_ACTIVE_FLOOR;
+                }
                 bool has_energy = (rms > floor);
 
                 if (has_energy || vad_speech) {
