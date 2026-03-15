@@ -31,6 +31,8 @@ class ProxyClient:
         self.sock: socket.socket | None = None
         self._reader: threading.Thread | None = None
         self._running = False
+        self._messages: list[dict[str, Any]] = []
+        self._lock = threading.Lock()
 
     def connect(self, timeout: float = 5.0) -> None:
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -82,12 +84,18 @@ class ProxyClient:
                     except json.JSONDecodeError:
                         print(f"[proxy-test] raw: {line}")
                         continue
+                    with self._lock:
+                        self._messages.append(msg)
                     ts = time.strftime("%H:%M:%S")
                     print(f"[{ts}] {json.dumps(msg, ensure_ascii=False)}")
             except OSError as e:
                 if self._running:
                     print(f"[proxy-test] socket error: {e}")
                 return
+
+    def snapshot_messages(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return list(self._messages)
 
 
 def send_default_config(client: ProxyClient, args: argparse.Namespace) -> None:
@@ -136,6 +144,8 @@ def cmd_listen_file(client: ProxyClient, args: argparse.Namespace) -> int:
         print("[proxy-test] afplay not found (macOS tool required for listen-file mode)")
         return 1
 
+    start_idx = len(client.snapshot_messages())
+
     print(f"[proxy-test] enabling listening; replaying file: {audio}")
     send_default_config(client, args)
     client.send({"type": "toggle", "enabled": True})
@@ -152,6 +162,23 @@ def cmd_listen_file(client: ProxyClient, args: argparse.Namespace) -> int:
     print("[proxy-test] disabling listening")
     client.send({"type": "toggle", "enabled": False})
     time.sleep(0.4)
+
+    if args.show_phrases:
+        msgs = client.snapshot_messages()[start_idx:]
+        finals: list[str] = []
+        for msg in msgs:
+            if msg.get("type") == "transcript" and msg.get("isFinal"):
+                text = str(msg.get("text", "")).strip()
+                if text and (not finals or finals[-1] != text):
+                    finals.append(text)
+
+        print("\n[proxy-test] final phrases:")
+        if not finals:
+            print("  (none)")
+        else:
+            for i, phrase in enumerate(finals, start=1):
+                print(f"  {i}. {phrase}")
+
     return 0
 
 
@@ -195,6 +222,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--duration", type=int, default=20, help="Listen duration (seconds)")
     p.add_argument("--audio", default="", help="Audio file for listen-file mode (wav/m4a/aiff)")
     p.add_argument("--post-wait", type=float, default=1.8, help="Seconds to wait after playback")
+    p.add_argument("--show-phrases", action="store_true", help="Print final transcript phrases after listen-file run")
     p.add_argument("--text", default="Hello from proxy test", help="Text for speak mode")
     p.add_argument("--wait", type=float, default=3.0, help="How long to wait after speak")
     return p

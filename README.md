@@ -110,6 +110,7 @@ rcli setup
 ```bash
 rcli                             # interactive TUI (push-to-talk + text)
 rcli listen                      # continuous voice mode
+rcli process-wav /tmp/test.wav   # deterministic WAV test (STT->LLM->TTS)
 rcli proxy --socket ~/.opencode/rcli-voice.sock --models ~/Library/RCLI/models
                                  # Unix socket voice proxy (OpenCode integration)
 rcli ask "open Safari"           # one-shot command
@@ -186,7 +187,7 @@ rcli proxy --socket ~/.opencode/rcli-voice.sock --models ~/Library/RCLI/models
 
 # 2) In another terminal, run test client modes
 python3 scripts/proxy_test.py listen --duration 20
-python3 scripts/proxy_test.py listen-file --audio ~/Desktop/test.m4a
+python3 scripts/proxy_test.py listen-file --audio ~/Desktop/test.m4a --show-phrases
 python3 scripts/proxy_test.py speak --text "Hello from proxy test"
 python3 scripts/proxy_test.py repl
 ```
@@ -266,6 +267,7 @@ All dependencies are vendored or CMake-fetched. Requires CMake 3.15+ and Apple C
 ```
 rcli                          Interactive TUI (push-to-talk + text + trace)
 rcli listen                   Continuous voice mode
+rcli process-wav <in.wav>     Run file through STT/LLM/TTS pipeline
 rcli proxy [options]          Run Unix socket voice proxy (STT/TTS bridge)
 rcli ask <text>               One-shot text command
 rcli actions [name]           List actions or show detail
