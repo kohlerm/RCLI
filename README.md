@@ -186,9 +186,13 @@ rcli proxy --socket ~/.opencode/rcli-voice.sock --models ~/Library/RCLI/models
 
 # 2) In another terminal, run test client modes
 python3 scripts/proxy_test.py listen --duration 20
+python3 scripts/proxy_test.py listen-file --audio ~/Desktop/test.m4a
 python3 scripts/proxy_test.py speak --text "Hello from proxy test"
 python3 scripts/proxy_test.py repl
 ```
+
+Tip: `listen-file` lets you replay a saved recording through your speakers so
+you can run repeatable STT tests without speaking live each run.
 
 ### Interactive TUI
 

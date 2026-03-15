@@ -14,6 +14,7 @@ import argparse
 import json
 import os
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -124,6 +125,36 @@ def cmd_speak(client: ProxyClient, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_listen_file(client: ProxyClient, args: argparse.Namespace) -> int:
+    audio = os.path.expanduser(args.audio)
+    if not os.path.exists(audio):
+        print(f"[proxy-test] audio file not found: {audio}")
+        return 1
+
+    player = "afplay"
+    if not shutil_which(player):
+        print("[proxy-test] afplay not found (macOS tool required for listen-file mode)")
+        return 1
+
+    print(f"[proxy-test] enabling listening; replaying file: {audio}")
+    send_default_config(client, args)
+    client.send({"type": "toggle", "enabled": True})
+    time.sleep(0.4)
+
+    try:
+        subprocess.run([player, audio], check=True)
+    except subprocess.CalledProcessError as e:
+        print(f"[proxy-test] failed to play audio: {e}")
+        client.send({"type": "toggle", "enabled": False})
+        return 1
+
+    time.sleep(args.post_wait)
+    print("[proxy-test] disabling listening")
+    client.send({"type": "toggle", "enabled": False})
+    time.sleep(0.4)
+    return 0
+
+
 def cmd_repl(client: ProxyClient, args: argparse.Namespace) -> int:
     send_default_config(client, args)
     print("[proxy-test] REPL started. Commands: on, off, speak <text>, config, quit")
@@ -156,15 +187,26 @@ def cmd_repl(client: ProxyClient, args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Test RCLI proxy without OpenCode")
-    p.add_argument("mode", choices=["listen", "speak", "repl"], help="Test mode")
+    p.add_argument("mode", choices=["listen", "listen-file", "speak", "repl"], help="Test mode")
     p.add_argument("--socket", default="~/.opencode/rcli-voice.sock", help="Unix socket path")
     p.add_argument("--stt-model", default="zipformer", help="STT model in config message")
     p.add_argument("--vad-threshold", type=float, default=0.5, help="VAD threshold in config message")
     p.add_argument("--tts-voice", default="", help="Optional TTS voice override")
     p.add_argument("--duration", type=int, default=20, help="Listen duration (seconds)")
+    p.add_argument("--audio", default="", help="Audio file for listen-file mode (wav/m4a/aiff)")
+    p.add_argument("--post-wait", type=float, default=1.8, help="Seconds to wait after playback")
     p.add_argument("--text", default="Hello from proxy test", help="Text for speak mode")
     p.add_argument("--wait", type=float, default=3.0, help="How long to wait after speak")
     return p
+
+
+def shutil_which(name: str) -> str | None:
+    path = os.environ.get("PATH", "")
+    for base in path.split(":"):
+        candidate = os.path.join(base, name)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
 
 
 def main() -> int:
@@ -184,6 +226,8 @@ def main() -> int:
 
         if args.mode == "listen":
             return cmd_listen(client, args)
+        if args.mode == "listen-file":
+            return cmd_listen_file(client, args)
         if args.mode == "speak":
             return cmd_speak(client, args)
         if args.mode == "repl":
