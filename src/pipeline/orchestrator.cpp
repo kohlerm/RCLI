@@ -1155,7 +1155,10 @@ void Orchestrator::stt_thread_fn() {
 
     // Proxy speech activity logging (for troubleshooting voice pickup/finals)
     bool stt_only_speaking = false;
+    int stt_only_start_chunks = 0;
     int stt_only_silence_chunks = 0;
+    constexpr float STT_ONLY_LOG_START_FLOOR = 0.003f;
+    constexpr int STT_ONLY_START_CHUNKS = 4;  // ~40ms sustained speech
     constexpr int STT_ONLY_STOP_CHUNKS = 20;  // ~200ms at 10ms loop
 
     // Voice mode LISTENING: record until silence or max duration
@@ -1269,18 +1272,29 @@ void Orchestrator::stt_thread_fn() {
             bool vad_speech = vad_.is_initialized() && vad_.is_speech();
 
             if (stt_only_mode) {
-                bool speech_now = vad_speech || (rms > STT_ONLY_START_FLOOR);
-                if (speech_now) {
-                    stt_only_silence_chunks = 0;
-                    if (!stt_only_speaking) {
-                        stt_only_speaking = true;
-                        fprintf(stderr, "[Proxy] Speech started (rms=%.5f, vad=%d)\n", rms, vad_speech ? 1 : 0);
+                // Debounced speech activity logging (higher RMS floor than STT feed)
+                // to avoid start/stop flapping on ambient noise.
+                bool speech_now = vad_speech || (rms > STT_ONLY_LOG_START_FLOOR);
+                if (!stt_only_speaking) {
+                    if (speech_now) {
+                        stt_only_start_chunks++;
+                        if (stt_only_start_chunks >= STT_ONLY_START_CHUNKS) {
+                            stt_only_speaking = true;
+                            stt_only_start_chunks = 0;
+                            stt_only_silence_chunks = 0;
+                            fprintf(stderr, "[Proxy] Speech started (rms=%.5f, vad=%d)\n", rms, vad_speech ? 1 : 0);
+                        }
+                    } else {
+                        stt_only_start_chunks = 0;
                     }
-                } else if (stt_only_speaking) {
+                } else if (speech_now) {
+                    stt_only_silence_chunks = 0;
+                } else {
                     stt_only_silence_chunks++;
                     if (stt_only_silence_chunks >= STT_ONLY_STOP_CHUNKS) {
                         stt_only_speaking = false;
                         stt_only_silence_chunks = 0;
+                        stt_only_start_chunks = 0;
                         fprintf(stderr, "[Proxy] Speech stopped\n");
                     }
                 }
