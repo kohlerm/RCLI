@@ -41,7 +41,7 @@ bool SttEngine::init(const SttConfig& config) {
     c.max_active_paths                = 4;
     c.enable_endpoint                 = 1;
     c.rule1_min_trailing_silence      = 1.8f;   // less aggressive to reduce premature finals/noise
-    c.rule2_min_trailing_silence      = 1.2f;   // reduce premature finals that clip trailing words
+    c.rule2_min_trailing_silence      = 1.0f;   // faster phrase finalization between short pauses
     c.rule3_min_utterance_length      = 20.0f;
 
     recognizer_ = SherpaOnnxCreateOnlineRecognizer(&c);
