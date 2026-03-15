@@ -429,6 +429,65 @@ static int cmd_ask(const Args& args) {
 }
 
 // =============================================================================
+// File transcription / pipeline test (deterministic audio input)
+// =============================================================================
+
+static int cmd_process_wav(const Args& args) {
+    if (args.help || args.arg1.empty()) {
+        fprintf(stderr,
+                "\n  Usage: rcli process-wav <input.wav> [output.wav]\n\n"
+                "  Runs full pipeline on a WAV file (STT -> LLM -> TTS).\n"
+                "  Input must be 16kHz mono WAV.\n"
+                "\n  Examples:\n"
+                "    rcli process-wav /tmp/test.wav\n"
+                "    rcli process-wav /tmp/test.wav /tmp/rcli-out.wav\n\n");
+        return args.help ? 0 : 1;
+    }
+
+    if (!models_exist(args.models_dir)) {
+        print_missing_models(args.models_dir);
+        return 1;
+    }
+
+    const std::string input_wav = args.arg1;
+    const std::string output_wav = args.arg2.empty() ? "/tmp/rcli_out.wav" : args.arg2;
+
+    g_engine = rcli_create(nullptr);
+    if (!g_engine) return 1;
+
+    fprintf(stderr, "%sInitializing...%s\n", color::dim, color::reset);
+    if (rcli_init(g_engine, args.models_dir.c_str(), args.gpu_layers) != 0) {
+        rcli_destroy(g_engine);
+        return 1;
+    }
+
+    fprintf(stderr, "%sProcessing:%s %s\n", color::dim, color::reset, input_wav.c_str());
+    int rc = rcli_process_wav(g_engine, input_wav.c_str(), output_wav.c_str(), nullptr, nullptr);
+    if (rc != 0) {
+        fprintf(stderr, "%s%sFailed to process WAV%s\n", color::bold, color::red, color::reset);
+        rcli_destroy(g_engine);
+        return 1;
+    }
+
+    const char* transcript = rcli_get_transcript(g_engine);
+    if (transcript && transcript[0]) {
+        fprintf(stdout, "%s\n", transcript);
+    } else {
+        fprintf(stderr, "%s%sNo transcript produced%s\n", color::bold, color::yellow, color::reset);
+    }
+
+    char* timings = rcli_get_timings(g_engine);
+    if (timings) {
+        fprintf(stderr, "%sTimings:%s %s\n", color::dim, color::reset, timings);
+        free(timings);
+    }
+
+    fprintf(stderr, "%sTTS output:%s %s\n", color::dim, color::reset, output_wav.c_str());
+    rcli_destroy(g_engine);
+    return 0;
+}
+
+// =============================================================================
 // RAG subcommands
 // =============================================================================
 
@@ -927,6 +986,7 @@ int main(int argc, char** argv) {
 
     if (args.command == "listen")      return cmd_listen(args);
     if (args.command == "ask")         return cmd_ask(args);
+    if (args.command == "process-wav") return cmd_process_wav(args);
     if (args.command == "mic-test")    return cmd_mic_test(args);
     if (args.command == "actions")     return cmd_actions(args);
     if (args.command == "action")      return cmd_action(args);

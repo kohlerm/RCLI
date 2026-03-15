@@ -1107,7 +1107,7 @@ void Orchestrator::stt_thread_fn() {
     }
 
     constexpr float ENERGY_FLOOR = 0.005f;
-    constexpr float STT_ONLY_ENERGY_FLOOR = 0.0015f;
+    constexpr float STT_ONLY_ENERGY_FLOOR = 0.0005f;
 
     // Barge-in: consecutive speech frames counter (debounce)
     int barge_in_speech_frames = 0;

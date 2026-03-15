@@ -355,21 +355,23 @@ private:
                 }
             }
 
-            // Filter phantom transcripts: single-character results from background
-            // noise (e.g. "I", "U", "O") are almost always false positives.
-            // Only apply to finals — partials will self-correct as more audio arrives.
-            if (is_final) {
-                // Strip whitespace to check real content length
-                size_t real_len = 0;
-                for (char c : t) {
-                    if (c != ' ' && c != '\t') real_len++;
-                }
-                if (real_len <= 1) {
-                    printf("[Proxy] Filtered phantom transcript: \"%s\" (final=%d, len=%zu)\n",
-                           t.c_str(), is_final, real_len);
-                    fflush(stdout);
-                    return;  // Skip broadcasting phantom single-char finals
-                }
+            // Strip whitespace to check real content length
+            size_t real_len = 0;
+            for (char c : t) {
+                if (c != ' ' && c != '\t') real_len++;
+            }
+
+            // Filter phantom short transcripts from background noise.
+            // - For partials: suppress single-char noise flicker in overlay.
+            // - For finals: suppress single-char false positives.
+            if (!is_final && real_len <= 1) {
+                return;
+            }
+            if (is_final && real_len <= 1) {
+                printf("[Proxy] Filtered phantom transcript: \"%s\" (final=%d, len=%zu)\n",
+                       t.c_str(), is_final, real_len);
+                fflush(stdout);
+                return;
             }
             
             printf("[Proxy] Transcript: \"%s\" (final=%d)\n", t.c_str(), is_final);
