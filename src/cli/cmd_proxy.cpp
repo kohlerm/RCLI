@@ -355,19 +355,20 @@ private:
                 }
             }
 
+            // Final-only mode for downstream clients (OpenCode): partials are
+            // often unstable and noisy, especially with mixed-language input.
+            if (!is_final) {
+                return;
+            }
+
             // Strip whitespace to check real content length
             size_t real_len = 0;
             for (char c : t) {
                 if (c != ' ' && c != '\t') real_len++;
             }
 
-            // Filter phantom short transcripts from background noise.
-            // - For partials: suppress single-char noise flicker in overlay.
-            // - For finals: suppress single-char false positives.
-            if (!is_final && real_len <= 1) {
-                return;
-            }
-            if (is_final && real_len <= 1) {
+            // Filter phantom single-char finals from background noise.
+            if (real_len <= 1) {
                 printf("[Proxy] Filtered phantom transcript: \"%s\" (final=%d, len=%zu)\n",
                        t.c_str(), is_final, real_len);
                 fflush(stdout);
