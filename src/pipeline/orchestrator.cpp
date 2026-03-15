@@ -1158,10 +1158,47 @@ void Orchestrator::stt_thread_fn() {
     int stt_only_start_chunks = 0;
     int stt_only_silence_chunks = 0;
     int stt_only_speaking_chunks = 0;
+    bool stt_only_force_finalize_pending = false;
+    int stt_only_force_finalize_chunks = 0;
     constexpr float STT_ONLY_LOG_START_FLOOR = 0.010f;
     constexpr int STT_ONLY_START_CHUNKS = 20; // ~200ms sustained speech
     constexpr int STT_ONLY_STOP_CHUNKS = 30;  // ~300ms at 10ms loop
     constexpr int STT_ONLY_FORCE_STOP_CHUNKS = 800; // ~8s safety stop for logging state
+    constexpr int STT_ONLY_FORCE_FINALIZE_CHUNKS = 100; // ~1.0s after speech stop
+
+    auto refine_stt_only_text = [&](const std::string& fallback) -> std::string {
+        std::string out = fallback;
+        if (!stt_only_mode || stt_only_audio_buf.empty()) {
+            return out;
+        }
+
+        std::string refined;
+        if (metalrt_stt_initialized_) {
+            refined = metalrt_stt_.transcribe(
+                stt_only_audio_buf.data(),
+                static_cast<int>(stt_only_audio_buf.size()),
+                16000);
+        } else if (offline_stt_.is_initialized()) {
+            refined = offline_stt_.transcribe(
+                stt_only_audio_buf.data(),
+                static_cast<int>(stt_only_audio_buf.size()));
+        }
+
+        if (!refined.empty()) {
+            auto first = refined.find_first_not_of(" \t\n\r");
+            auto last = refined.find_last_not_of(" \t\n\r");
+            if (first == std::string::npos) {
+                refined.clear();
+            } else {
+                refined = refined.substr(first, last - first + 1);
+            }
+        }
+
+        if (!refined.empty()) {
+            out = refined;
+        }
+        return out;
+    };
 
     // Voice mode LISTENING: record until silence or max duration
     std::vector<float> voice_command_buf;
@@ -1287,6 +1324,8 @@ void Orchestrator::stt_thread_fn() {
                             stt_only_start_chunks = 0;
                             stt_only_silence_chunks = 0;
                             stt_only_speaking_chunks = 0;
+                            stt_only_force_finalize_pending = false;
+                            stt_only_force_finalize_chunks = 0;
                             fprintf(stderr, "[Proxy] Speech started (rms=%.5f, vad=%d)\n", rms, vad_speech ? 1 : 0);
                         }
                     } else {
@@ -1310,6 +1349,11 @@ void Orchestrator::stt_thread_fn() {
                         stt_only_start_chunks = 0;
                         stt_only_speaking_chunks = 0;
                         fprintf(stderr, "[Proxy] Speech stopped\n");
+
+                        if (!last_partial.empty()) {
+                            stt_only_force_finalize_pending = true;
+                            stt_only_force_finalize_chunks = 0;
+                        }
                     }
                 }
             }
@@ -1572,33 +1616,8 @@ void Orchestrator::stt_thread_fn() {
                 }
 
                 std::string emit_text = result.text;
-                if (result.is_final && stt_only_mode && !stt_only_audio_buf.empty()) {
-                    std::string refined;
-                    if (metalrt_stt_initialized_) {
-                        refined = metalrt_stt_.transcribe(
-                            stt_only_audio_buf.data(),
-                            static_cast<int>(stt_only_audio_buf.size()),
-                            16000);
-                    } else if (offline_stt_.is_initialized()) {
-                        refined = offline_stt_.transcribe(
-                            stt_only_audio_buf.data(),
-                            static_cast<int>(stt_only_audio_buf.size()));
-                    }
-
-                    // Trim refined text
-                    if (!refined.empty()) {
-                        auto first = refined.find_first_not_of(" \t\n\r");
-                        auto last = refined.find_last_not_of(" \t\n\r");
-                        if (first == std::string::npos) {
-                            refined.clear();
-                        } else {
-                            refined = refined.substr(first, last - first + 1);
-                        }
-                    }
-
-                    if (!refined.empty()) {
-                        emit_text = refined;
-                    }
+                if (result.is_final) {
+                    emit_text = refine_stt_only_text(result.text);
                 }
 
                 // Always emit finals, even if final text equals the last partial.
@@ -1608,6 +1627,9 @@ void Orchestrator::stt_thread_fn() {
                 }
 
                 if (result.is_final) {
+                    stt_only_force_finalize_pending = false;
+                    stt_only_force_finalize_chunks = 0;
+
                     if (stt_only_mode && stt_only_speaking) {
                         stt_only_speaking = false;
                         stt_only_silence_chunks = 0;
@@ -1631,6 +1653,45 @@ void Orchestrator::stt_thread_fn() {
 
                     // Clear barge-in trigger so LLM thread knows it's fresh input
                     barge_in_triggered_.store(false, std::memory_order_release);
+                }
+            }
+
+            if (stt_only_mode && stt_only_force_finalize_pending) {
+                if (last_partial.empty()) {
+                    stt_only_force_finalize_pending = false;
+                    stt_only_force_finalize_chunks = 0;
+                } else {
+                    stt_only_force_finalize_chunks++;
+                    if (stt_only_force_finalize_chunks >= STT_ONLY_FORCE_FINALIZE_CHUNKS) {
+                        std::string emit_text = refine_stt_only_text(last_partial);
+
+                        if (transcript_cb_) {
+                            transcript_cb_(emit_text, true);
+                        }
+
+                        if (stt_only_speaking) {
+                            stt_only_speaking = false;
+                            stt_only_silence_chunks = 0;
+                            stt_only_start_chunks = 0;
+                            stt_only_speaking_chunks = 0;
+                            fprintf(stderr, "[Proxy] Speech stopped (force-finalized)\n");
+                        }
+
+                        LOG_DEBUG("STT", "Force-final: \"%s\"", emit_text.c_str());
+                        {
+                            std::lock_guard<std::mutex> lock(text_mutex_);
+                            pending_text_ = emit_text;
+                            text_ready_ = true;
+                        }
+                        text_cv_.notify_one();
+
+                        stt_.reset();
+                        last_partial.clear();
+                        stt_only_audio_buf.clear();
+                        stt_only_force_finalize_pending = false;
+                        stt_only_force_finalize_chunks = 0;
+                        barge_in_triggered_.store(false, std::memory_order_release);
+                    }
                 }
             }
         }
