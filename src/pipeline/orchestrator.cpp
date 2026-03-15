@@ -1157,9 +1157,9 @@ void Orchestrator::stt_thread_fn() {
     bool stt_only_speaking = false;
     int stt_only_start_chunks = 0;
     int stt_only_silence_chunks = 0;
-    constexpr float STT_ONLY_LOG_START_FLOOR = 0.003f;
-    constexpr int STT_ONLY_START_CHUNKS = 4;  // ~40ms sustained speech
-    constexpr int STT_ONLY_STOP_CHUNKS = 20;  // ~200ms at 10ms loop
+    constexpr float STT_ONLY_LOG_START_FLOOR = 0.010f;
+    constexpr int STT_ONLY_START_CHUNKS = 20; // ~200ms sustained speech
+    constexpr int STT_ONLY_STOP_CHUNKS = 30;  // ~300ms at 10ms loop
 
     // Voice mode LISTENING: record until silence or max duration
     std::vector<float> voice_command_buf;
