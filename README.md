@@ -110,6 +110,8 @@ rcli setup
 ```bash
 rcli                             # interactive TUI (push-to-talk + text)
 rcli listen                      # continuous voice mode
+rcli proxy --socket ~/.opencode/rcli-voice.sock --models ~/Library/RCLI/models
+                                 # Unix socket voice proxy (OpenCode integration)
 rcli ask "open Safari"           # one-shot command
 rcli ask "play some jazz on Spotify"
 rcli metalrt                     # MetalRT GPU engine management
@@ -246,6 +248,7 @@ All dependencies are vendored or CMake-fetched. Requires CMake 3.15+ and Apple C
 ```
 rcli                          Interactive TUI (push-to-talk + text + trace)
 rcli listen                   Continuous voice mode
+rcli proxy [options]          Run Unix socket voice proxy (STT/TTS bridge)
 rcli ask <text>               One-shot text command
 rcli actions [name]           List actions or show detail
 rcli rag ingest <dir>         Index documents for RAG
@@ -264,6 +267,14 @@ Options:
   --ctx-size <n>      LLM context size (default: 4096)
   --no-speak          Text output only (no TTS)
   --verbose, -v       Debug logs
+
+Proxy options (`rcli proxy`):
+  --socket <path>     Unix socket path (default: ~/.opencode/rcli-voice.sock)
+  --models <dir>      Models directory (default: ~/Library/RCLI/models)
+  --tts-model <name>  TTS model (default: kokoro-en)
+  --tts-voice <name>  TTS voice override
+  --stt-model <name>  STT model (default: zipformer)
+  --vad-threshold <n> VAD threshold 0.0-1.0 (default: 0.5)
 ```
 
 </details>
