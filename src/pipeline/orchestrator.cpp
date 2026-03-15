@@ -1107,8 +1107,8 @@ void Orchestrator::stt_thread_fn() {
     }
 
     constexpr float ENERGY_FLOOR = 0.005f;
-    constexpr float STT_ONLY_START_FLOOR = 0.0005f;   // easier first-word pickup
-    constexpr float STT_ONLY_ACTIVE_FLOOR = 0.0012f;  // avoid sticky utterances on ambient noise
+    constexpr float STT_ONLY_START_FLOOR = 0.00035f;  // easier first-word pickup (quiet speakers)
+    constexpr float STT_ONLY_ACTIVE_FLOOR = 0.0009f;  // keep quiet speech flowing
 
     // Barge-in: consecutive speech frames counter (debounce)
     int barge_in_speech_frames = 0;
@@ -1158,6 +1158,7 @@ void Orchestrator::stt_thread_fn() {
     int stt_only_start_chunks = 0;
     int stt_only_silence_chunks = 0;
     int stt_only_speaking_chunks = 0;
+    int stt_only_feed_hangover_chunks = 0;
     bool stt_only_force_finalize_pending = false;
     int stt_only_force_finalize_chunks = 0;
     constexpr float STT_ONLY_LOG_START_FLOOR = 0.010f;
@@ -1165,6 +1166,7 @@ void Orchestrator::stt_thread_fn() {
     constexpr int STT_ONLY_STOP_CHUNKS = 30;  // ~300ms at 10ms loop
     constexpr int STT_ONLY_FORCE_STOP_CHUNKS = 800; // ~8s safety stop for logging state
     constexpr int STT_ONLY_FORCE_FINALIZE_CHUNKS = 100; // ~1.0s after speech stop
+    constexpr int STT_ONLY_FEED_HANGOVER_CHUNKS = 50; // ~500ms keep-feeding after speech hint
 
     auto refine_stt_only_text = [&](const std::string& fallback) -> std::string {
         std::string out = fallback;
@@ -1580,7 +1582,18 @@ void Orchestrator::stt_thread_fn() {
                 }
                 bool has_energy = (rms > floor);
 
-                if (has_energy || vad_speech) {
+                bool keep_real_audio = false;
+                if (stt_only) {
+                    bool speech_hint = vad_speech || (rms > STT_ONLY_START_FLOOR);
+                    if (speech_hint) {
+                        stt_only_feed_hangover_chunks = STT_ONLY_FEED_HANGOVER_CHUNKS;
+                    } else if (stt_only_feed_hangover_chunks > 0) {
+                        stt_only_feed_hangover_chunks--;
+                    }
+                    keep_real_audio = stt_only_feed_hangover_chunks > 0;
+                }
+
+                if (has_energy || vad_speech || keep_real_audio) {
                     stt_.feed_audio(chunk_buf.data(), (int)to_read);
                 } else if (stt_only) {
                     // Keep stream timing continuous in proxy mode so endpoint
