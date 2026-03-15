@@ -176,6 +176,20 @@ rcli rag ingest ~/Documents/notes
 rcli ask --rag ~/Library/RCLI/index "summarize the project plan"
 ```
 
+### Proxy Test (Without OpenCode)
+
+You can test the Unix socket proxy directly using the included script:
+
+```bash
+# 1) Start the proxy
+rcli proxy --socket ~/.opencode/rcli-voice.sock --models ~/Library/RCLI/models
+
+# 2) In another terminal, run test client modes
+python3 scripts/proxy_test.py listen --duration 20
+python3 scripts/proxy_test.py speak --text "Hello from proxy test"
+python3 scripts/proxy_test.py repl
+```
+
 ### Interactive TUI
 
 A terminal dashboard with push-to-talk, live hardware monitoring, model management, and an actions browser.
