@@ -1048,7 +1048,7 @@ int main(int argc, char** argv) {
                     "    -m, --models DIR        Models directory (default: ~/Library/RCLI/models)\n"
                     "        --tts-model MODEL   TTS model: kokoro-en, kokoro-multi, piper-lessac (default: kokoro-en)\n"
                     "        --tts-voice VOICE   TTS voice name\n"
-                    "        --stt-model MODEL   STT model: zipformer, whisper-base (default: zipformer)\n"
+                    "        --stt-model MODEL   STT model: zipformer, parakeet-tdt (default: zipformer)\n"
                     "        --vad-threshold N   VAD threshold 0.0-1.0 (default: 0.5)\n"
                     "        --gpu-layers N      GPU layers for LLM (default: 99)\n"
                     "    -v, --verbose           Enable verbose output\n"

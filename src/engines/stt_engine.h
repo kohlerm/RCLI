@@ -21,6 +21,7 @@ struct SttConfig {
     int         sample_rate = 16000;
     int         num_threads = 2;
     std::string provider   = "cpu"; // "cpu" or "coreml"
+    std::string model_type = "";    // "nemo_transducer" for Parakeet, "" for Zipformer
 };
 
 class SttEngine {

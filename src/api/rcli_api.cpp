@@ -48,6 +48,7 @@ struct RCLIEngine {
     // Config overrides from rcli_create() config_json
     std::string config_system_prompt;
     std::string config_engine_override;  // "metalrt", "llamacpp", or "" (use preference file)
+    std::string config_streaming_stt_model;  // "zipformer" or "parakeet-tdt"
     int config_gpu_layers = -1;
     int config_ctx_size   = -1;
 
@@ -179,6 +180,8 @@ RCLIHandle rcli_create(const char* config_json) {
         if (!prompt.empty()) engine->config_system_prompt = prompt;
         std::string eng = config_get_string(cfg, "engine");
         if (!eng.empty()) engine->config_engine_override = eng;
+        std::string stt = config_get_string(cfg, "streaming_stt_model");
+        if (!stt.empty()) engine->config_streaming_stt_model = stt;
         engine->config_gpu_layers = config_get_int(cfg, "gpu_layers", -1);
         engine->config_ctx_size = config_get_int(cfg, "ctx_size", -1);
     }
@@ -663,13 +666,33 @@ int rcli_init_proxy(RCLIHandle handle, const char* models_dir) {
 
     PipelineConfig config;
 
-    // --- STT (Zipformer streaming — always active for live mic) ---
-    config.stt.encoder_path = dir + "/zipformer/encoder-epoch-99-avg-1.int8.onnx";
-    config.stt.decoder_path = dir + "/zipformer/decoder-epoch-99-avg-1.int8.onnx";
-    config.stt.joiner_path  = dir + "/zipformer/joiner-epoch-99-avg-1.int8.onnx";
-    config.stt.tokens_path  = dir + "/zipformer/tokens.txt";
-    config.stt.sample_rate  = 16000;
-    config.stt.num_threads  = 2;
+    // --- Streaming STT (user-configurable: zipformer or parakeet-tdt) ---
+    std::string streaming_stt = engine->config_streaming_stt_model;
+    if (streaming_stt.empty()) streaming_stt = "zipformer";  // Default
+    
+    if (streaming_stt == "parakeet-tdt" || streaming_stt == "parakeet") {
+        // Use Parakeet TDT for streaming (NeMo transducer model)
+        std::string base = dir + "/parakeet-tdt";
+        config.stt.encoder_path = base + "/encoder.int8.onnx";
+        config.stt.decoder_path = base + "/decoder.int8.onnx";
+        config.stt.joiner_path  = base + "/joiner.int8.onnx";
+        config.stt.tokens_path  = base + "/tokens.txt";
+        config.stt.sample_rate  = 16000;
+        config.stt.num_threads  = 4;
+        config.stt.model_type   = "nemo_transducer";  // Required for NeMo models
+        engine->stt_model_name = "Parakeet TDT 0.6B v3 (streaming)";
+        LOG_INFO("RCLI", "Using Parakeet TDT 0.6B v3 for streaming STT");
+    } else {
+        // Default: Zipformer streaming
+        config.stt.encoder_path = dir + "/zipformer/encoder-epoch-99-avg-1.int8.onnx";
+        config.stt.decoder_path = dir + "/zipformer/decoder-epoch-99-avg-1.int8.onnx";
+        config.stt.joiner_path  = dir + "/zipformer/joiner-epoch-99-avg-1.int8.onnx";
+        config.stt.tokens_path  = dir + "/zipformer/tokens.txt";
+        config.stt.sample_rate  = 16000;
+        config.stt.num_threads  = 2;
+        engine->stt_model_name = "Zipformer (streaming)";
+        LOG_INFO("RCLI", "Using Zipformer for streaming STT");
+    }
 
     // --- Offline STT (resolve: user preference > auto-detect highest priority) ---
     {
@@ -2919,6 +2942,71 @@ void rcli_get_context_info(RCLIHandle handle, int* out_prompt_tokens, int* out_c
             *out_ctx_size = engine->pipeline.llm().context_size();
         }
     }
+}
+
+void rcli_stt_feed_audio(RCLIHandle handle, const float* samples, int num_samples) {
+    if (!handle || !samples || num_samples <= 0) return;
+    auto* engine = static_cast<RCLIEngine*>(handle);
+    engine->pipeline.stt().feed_audio(samples, num_samples);
+}
+
+void rcli_stt_process_tick(RCLIHandle handle) {
+    if (!handle) return;
+    auto* engine = static_cast<RCLIEngine*>(handle);
+    engine->pipeline.stt().process_tick();
+}
+
+int rcli_stt_get_result(RCLIHandle handle, const char** out_text, int* out_is_final) {
+    if (!handle) return 0;
+    auto* engine = static_cast<RCLIEngine*>(handle);
+    auto result = engine->pipeline.stt().get_result();
+    if (result.text.empty()) return 0;
+    engine->last_transcript = result.text;
+    if (out_text) *out_text = engine->last_transcript.c_str();
+    if (out_is_final) *out_is_final = result.is_final ? 1 : 0;
+    return 1;
+}
+
+void rcli_stt_reset(RCLIHandle handle) {
+    if (!handle) return;
+    auto* engine = static_cast<RCLIEngine*>(handle);
+    engine->pipeline.stt().reset();
+}
+
+const char* rcli_offline_transcribe(RCLIHandle handle, const float* samples, int num_samples) {
+    if (!handle || !samples || num_samples <= 0) return "";
+    auto* engine = static_cast<RCLIEngine*>(handle);
+    if (!engine->pipeline.offline_stt().is_initialized()) return "";
+    engine->last_transcript = engine->pipeline.offline_stt().transcribe(samples, num_samples);
+    return engine->last_transcript.c_str();
+}
+
+int rcli_has_offline_stt(RCLIHandle handle) {
+    if (!handle) return 0;
+    auto* engine = static_cast<RCLIEngine*>(handle);
+    return engine->pipeline.offline_stt().is_initialized() ? 1 : 0;
+}
+
+int rcli_read_capture_audio(RCLIHandle handle, float* buf, int max_samples) {
+    if (!handle || !buf || max_samples <= 0) return 0;
+    auto* engine = static_cast<RCLIEngine*>(handle);
+    // Access the capture ring buffer via the audio subsystem
+    // The orchestrator's start_capture() writes CoreAudio data here
+    auto* rb = engine->pipeline.capture_ring_buffer();
+    if (!rb) return 0;
+    size_t avail = rb->available_read();
+    if (avail == 0) return 0;
+    size_t to_read = std::min(avail, static_cast<size_t>(max_samples));
+    rb->read(buf, to_read);
+    return static_cast<int>(to_read);
+}
+
+void rcli_stop_capture(RCLIHandle handle) {
+    if (!handle) return;
+    auto* engine = static_cast<RCLIEngine*>(handle);
+    // Must mirror start_capture(): clear live_running_ so start_capture() can be called again,
+    // stop the audio device, and reset state to IDLE.
+    engine->pipeline.stop_capture();
 }
 
 } // extern "C"

@@ -25,7 +25,7 @@ bool SttEngine::init(const SttConfig& config) {
     SherpaOnnxOnlineRecognizerConfig c;
     std::memset(&c, 0, sizeof(c));
 
-    // Transducer model config (Zipformer)
+    // Transducer model config (Zipformer or NeMo/Parakeet)
     c.model_config.transducer.encoder = config.encoder_path.c_str();
     c.model_config.transducer.decoder = config.decoder_path.c_str();
     c.model_config.transducer.joiner  = config.joiner_path.c_str();
@@ -33,6 +33,11 @@ bool SttEngine::init(const SttConfig& config) {
     c.model_config.num_threads        = config.num_threads;
     c.model_config.provider           = config.provider.c_str();
     c.model_config.debug              = 0;
+    
+    // Set model_type for NeMo transducer models (Parakeet)
+    if (!config.model_type.empty()) {
+        c.model_config.model_type = config.model_type.c_str();
+    }
 
     c.feat_config.sample_rate         = config.sample_rate;
     c.feat_config.feature_dim         = 80;

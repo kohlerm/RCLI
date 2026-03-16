@@ -31,6 +31,70 @@
 #include <unordered_map>
 #include <chrono>
 
+// Base64 decoder (no external deps)
+namespace base64 {
+    static const unsigned char table[256] = {
+        64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
+        64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
+        64,64,64,64,64,64,64,64,64,64,64,62,64,64,64,63,
+        52,53,54,55,56,57,58,59,60,61,64,64,64,65,64,64,
+        64, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,
+        15,16,17,18,19,20,21,22,23,24,25,64,64,64,64,64,
+        64,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,
+        41,42,43,44,45,46,47,48,49,50,51,64,64,64,64,64,
+        64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
+        64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
+        64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
+        64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
+        64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
+        64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
+        64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
+        64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64
+    };
+
+    std::vector<unsigned char> decode(const std::string& input) {
+        size_t len = input.size();
+        if (len == 0) return {};
+        size_t padding = 0;
+        if (len >= 1 && input[len - 1] == '=') padding++;
+        if (len >= 2 && input[len - 2] == '=') padding++;
+        size_t out_len = (len / 4) * 3 - padding;
+        std::vector<unsigned char> out(out_len);
+        size_t j = 0;
+        uint32_t buf = 0;
+        int bits = 0;
+        for (size_t i = 0; i < len; ++i) {
+            unsigned char c = table[(unsigned char)input[i]];
+            if (c == 64) continue;
+            if (c == 65) break; // '=' padding
+            buf = (buf << 6) | c;
+            bits += 6;
+            if (bits >= 8) {
+                bits -= 8;
+                if (j < out_len) out[j++] = (buf >> bits) & 0xFF;
+            }
+        }
+        out.resize(j);
+        return out;
+    }
+
+    std::string encode(const unsigned char* data, size_t len) {
+        static const char tbl[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        std::string out;
+        out.reserve(((len + 2) / 3) * 4);
+        for (size_t i = 0; i < len; i += 3) {
+            uint32_t n = static_cast<uint32_t>(data[i]) << 16;
+            if (i + 1 < len) n |= static_cast<uint32_t>(data[i + 1]) << 8;
+            if (i + 2 < len) n |= static_cast<uint32_t>(data[i + 2]);
+            out.push_back(tbl[(n >> 18) & 0x3F]);
+            out.push_back(tbl[(n >> 12) & 0x3F]);
+            out.push_back((i + 1 < len) ? tbl[(n >> 6) & 0x3F] : '=');
+            out.push_back((i + 2 < len) ? tbl[n & 0x3F] : '=');
+        }
+        return out;
+    }
+}
+
 // Simple JSON builder (no external deps)
 namespace json {
     std::string escape(const std::string& s) {
@@ -318,8 +382,9 @@ public:
     
 private:
     bool init_engine_proxy() {
-        // Create engine
-        engine_ = rcli_create(nullptr);
+        // Create engine with streaming STT model config
+        std::string config_json = "{\"streaming_stt_model\":\"" + config_.stt_model + "\"}";
+        engine_ = rcli_create(config_json.c_str());
         if (!engine_) {
             fprintf(stderr, "Failed to create RCLI engine\n");
             return false;
@@ -355,23 +420,22 @@ private:
                 }
             }
 
-            // Final-only mode for downstream clients (OpenCode): partials are
-            // often unstable and noisy, especially with mixed-language input.
-            if (!is_final) {
-                return;
-            }
-
             // Strip whitespace to check real content length
             size_t real_len = 0;
             for (char c : t) {
                 if (c != ' ' && c != '\t') real_len++;
             }
 
-            // Filter phantom single-char finals from background noise.
+            // Filter phantom single-char transcripts from background noise.
             if (real_len <= 1) {
                 printf("[Proxy] Filtered phantom transcript: \"%s\" (final=%d, len=%zu)\n",
                        t.c_str(), is_final, real_len);
                 fflush(stdout);
+                return;
+            }
+
+            // Filter very short partials (< 3 real chars) to reduce noise.
+            if (!is_final && real_len < 3) {
                 return;
             }
             
@@ -476,8 +540,11 @@ private:
     }
     
     void process_client_message(ProxyClientImpl* client, const std::string& line) {
-        printf("[Proxy] Received message from client fd=%d: %s\n", client->fd(), line.c_str());
-        fflush(stdout);
+        // Don't log audio messages (too frequent and large)
+        if (line.find("\"audio\"") == std::string::npos && line.find("\"audio_final\"") == std::string::npos) {
+            printf("[Proxy] Received message from client fd=%d: %s\n", client->fd(), line.c_str());
+            fflush(stdout);
+        }
         
         // Simple JSON parsing (extract type field)
         size_t type_pos = line.find("\"type\"");
@@ -499,31 +566,74 @@ private:
             bool enabled = line.find("\"enabled\":true") != std::string::npos ||
                           line.find("\"enabled\": true") != std::string::npos;
             
-            printf("[Proxy] Toggle received: enabled=%s\n", enabled ? "true" : "false");
+            // Parse clientAudioCapture field
+            bool client_audio = line.find("\"clientAudioCapture\":true") != std::string::npos ||
+                               line.find("\"clientAudioCapture\": true") != std::string::npos;
+            
+            printf("[Proxy] Toggle received: enabled=%s, clientAudio=%s\n", 
+                   enabled ? "true" : "false", client_audio ? "true" : "false");
             fflush(stdout);
             
             if (enabled) {
-                // Stop existing STT if already running (e.g. from a previous client)
+                // Stop existing STT if already running
                 if (stt_running_) {
                     printf("[Proxy] Stopping existing STT session before restart...\n");
                     fflush(stdout);
                     rcli_stop_listening(engine_);
                     stt_running_ = false;
                 }
-                // Start streaming STT only (no LLM thread) — for proxy mode
-                printf("[Proxy] Calling rcli_start_stt_only...\n");
-                fflush(stdout);
-                int rc = rcli_start_stt_only(engine_);
-                printf("[Proxy] rcli_start_stt_only returned %d\n", rc);
-                fflush(stdout);
-                if (rc == 0) stt_running_ = true;
+                
+                client_audio_mode_ = client_audio;
+                
+                if (client_audio) {
+                    // Client handles VAD — RCLI opens CoreAudio mic and broadcasts
+                    // raw audio chunks to the client over the socket.  Client runs
+                    // EnergyVad, then sends audio_final back for offline STT.
+                    printf("[Proxy] Client VAD mode — starting mic + audio broadcast\n");
+                    fflush(stdout);
+                    
+                    int rc = rcli_start_capture(engine_);
+                    if (rc != 0) {
+                        printf("[Proxy] Failed to start capture: %d\n", rc);
+                        fflush(stdout);
+                        return;
+                    }
+                    stt_running_ = true;
+                    
+                    // Start audio broadcast thread
+                    start_audio_broadcast();
+                    
+                    // Broadcast listening state so client knows we're ready
+                    std::string msg = json::object({{"type", "state"}, {"state", "listening"}});
+                    broadcast(msg);
+                } else {
+                    // Normal mode — RCLI opens CoreAudio mic + runs VAD + STT
+                    printf("[Proxy] Calling rcli_start_stt_only...\n");
+                    fflush(stdout);
+                    int rc = rcli_start_stt_only(engine_);
+                    printf("[Proxy] rcli_start_stt_only returned %d\n", rc);
+                    fflush(stdout);
+                    if (rc == 0) stt_running_ = true;
+                }
             } else {
                 // Stop listening
                 if (stt_running_) {
-                    rcli_stop_listening(engine_);
+                    stop_audio_broadcast();
+                    if (client_audio_mode_) {
+                        rcli_stop_capture(engine_);
+                    } else {
+                        rcli_stop_listening(engine_);
+                    }
                     stt_running_ = false;
+                    client_audio_mode_ = false;
                 }
             }
+        } else if (msg_type == "audio_final") {
+            // Complete speech segment from client — run Parakeet TDT for final transcript
+            if (!stt_running_ || !client_audio_mode_) {
+                return;
+            }
+            handle_audio_final(line);
         } else if (msg_type == "speak") {
             // Parse text field
             size_t text_pos = line.find("\"text\"");
@@ -546,6 +656,166 @@ private:
         }
     }
     
+    // Extract a string value from a JSON line for a given key
+    std::string extract_json_string(const std::string& line, const std::string& key) {
+        std::string search = "\"" + key + "\"";
+        size_t pos = line.find(search);
+        if (pos == std::string::npos) return "";
+        size_t colon = line.find(':', pos + search.size());
+        if (colon == std::string::npos) return "";
+        size_t q1 = line.find('"', colon + 1);
+        if (q1 == std::string::npos) return "";
+        size_t q2 = line.find('"', q1 + 1);
+        if (q2 == std::string::npos) return "";
+        return line.substr(q1 + 1, q2 - q1 - 1);
+    }
+
+    // Decode base64 PCM16 to float32 samples (normalized -1.0 to 1.0)
+    std::vector<float> decode_audio(const std::string& b64) {
+        auto bytes = base64::decode(b64);
+        size_t num_samples = bytes.size() / 2;
+        std::vector<float> samples(num_samples);
+        for (size_t i = 0; i < num_samples; ++i) {
+            int16_t s = static_cast<int16_t>(bytes[i * 2] | (bytes[i * 2 + 1] << 8));
+            samples[i] = s / 32768.0f;
+        }
+        return samples;
+    }
+
+    // Handle complete speech segment — run Parakeet TDT / Whisper for accurate final
+    void handle_audio_final(const std::string& line) {
+        std::string data = extract_json_string(line, "data");
+        if (data.empty()) return;
+
+        auto samples = decode_audio(data);
+        if (samples.empty()) return;
+
+        printf("[Proxy] audio_final: %zu samples (%.1fs)\n", 
+               samples.size(), samples.size() / 16000.0f);
+        fflush(stdout);
+
+        // Reset streaming STT (we're about to emit a final from offline)
+        rcli_stt_reset(engine_);
+        last_client_partial_.clear();
+
+        std::string text;
+
+        // Try offline STT (Parakeet TDT or Whisper) first — higher accuracy
+        if (rcli_has_offline_stt(engine_)) {
+            const char* result = rcli_offline_transcribe(
+                engine_, samples.data(), static_cast<int>(samples.size()));
+            if (result && result[0] != '\0') {
+                text = result;
+            }
+            printf("[Proxy] Offline STT result: \"%s\"\n", text.c_str());
+            fflush(stdout);
+        }
+
+        // Fallback: run Zipformer on the full buffer
+        if (text.empty()) {
+            rcli_stt_feed_audio(engine_, samples.data(), static_cast<int>(samples.size()));
+            rcli_stt_process_tick(engine_);
+            const char* result_text = nullptr;
+            int is_final = 0;
+            if (rcli_stt_get_result(engine_, &result_text, &is_final) && result_text) {
+                text = result_text;
+            }
+            rcli_stt_reset(engine_);
+            printf("[Proxy] Streaming STT fallback result: \"%s\"\n", text.c_str());
+            fflush(stdout);
+        }
+
+        // Trim whitespace (preserve original casing from the STT model)
+        if (!text.empty()) {
+            size_t start = text.find_first_not_of(" \t\r\n");
+            if (start == std::string::npos) {
+                text.clear();
+            } else {
+                size_t end = text.find_last_not_of(" \t\r\n");
+                text = text.substr(start, end - start + 1);
+            }
+        }
+
+        // Filter phantom results — but always notify client so it exits "processing"
+        size_t real_len = 0;
+        for (char c : text) {
+            if (c != ' ' && c != '\t') real_len++;
+        }
+        if (real_len <= 1) {
+            printf("[Proxy] audio_final filtered (too short: \"%s\"), sending empty final\n", text.c_str());
+            fflush(stdout);
+            // Send empty final so bridge exits "processing" state
+            std::string msg = json::object_with_bool(
+                {{"type", "transcript"}, {"text", ""}},
+                {{"isFinal", true}}
+            );
+            broadcast(msg);
+            return;
+        }
+
+        printf("[Proxy] audio_final transcript: \"%s\"\n", text.c_str());
+        fflush(stdout);
+
+        std::string msg = json::object_with_bool(
+            {{"type", "transcript"}, {"text", json::escape(text)}},
+            {{"isFinal", true}}
+        );
+        broadcast(msg);
+    }
+
+    // --- Audio broadcast thread: reads CoreAudio ring buffer, sends to clients ---
+    
+    void start_audio_broadcast() {
+        if (audio_broadcast_running_.load()) return;
+        audio_broadcast_running_.store(true, std::memory_order_release);
+        audio_broadcast_thread_ = std::thread([this]() {
+            // Read buffer: 1600 float samples = 100ms at 16kHz
+            constexpr int CHUNK = 1600;
+            std::vector<float> buf(CHUNK);
+            // PCM16 encoding buffer (2 bytes per sample)
+            std::vector<unsigned char> pcm16(CHUNK * 2);
+            
+            printf("[Proxy] Audio broadcast thread started\n");
+            fflush(stdout);
+            
+            while (audio_broadcast_running_.load(std::memory_order_relaxed)) {
+                int n = rcli_read_capture_audio(engine_, buf.data(), CHUNK);
+                if (n > 0) {
+                    // Convert float32 [-1,1] to PCM16 little-endian
+                    for (int i = 0; i < n; ++i) {
+                        float s = buf[i];
+                        if (s > 1.0f) s = 1.0f;
+                        if (s < -1.0f) s = -1.0f;
+                        int16_t v = static_cast<int16_t>(s * 32767.0f);
+                        pcm16[i * 2]     = static_cast<unsigned char>(v & 0xFF);
+                        pcm16[i * 2 + 1] = static_cast<unsigned char>((v >> 8) & 0xFF);
+                    }
+                    
+                    std::string b64 = base64::encode(pcm16.data(), n * 2);
+                    
+                    // Build JSON manually (avoid escaping overhead for data field)
+                    std::string msg = "{\"type\":\"audio_chunk\",\"data\":\"" + b64 + 
+                                      "\",\"samples\":" + std::to_string(n) + "}";
+                    broadcast(msg);
+                } else {
+                    // No data — sleep briefly to avoid busy-spinning
+                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                }
+            }
+            
+            printf("[Proxy] Audio broadcast thread stopped\n");
+            fflush(stdout);
+        });
+    }
+    
+    void stop_audio_broadcast() {
+        if (!audio_broadcast_running_.load()) return;
+        audio_broadcast_running_.store(false, std::memory_order_release);
+        if (audio_broadcast_thread_.joinable()) {
+            audio_broadcast_thread_.join();
+        }
+    }
+
     std::string json_unescape(const std::string& s) {
         std::string result;
         for (size_t i = 0; i < s.length(); ++i) {
@@ -597,19 +867,29 @@ private:
         if (should_stop_stt) {
             printf("[Proxy] No clients remaining, stopping STT...\n");
             fflush(stdout);
-            auto t0 = std::chrono::steady_clock::now();
-            rcli_stop_listening(engine_);
-            auto t1 = std::chrono::steady_clock::now();
-            auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-            printf("[Proxy] rcli_stop_listening took %lld ms\n", ms);
-            fflush(stdout);
+            stop_audio_broadcast();
+            if (client_audio_mode_) {
+                rcli_stop_capture(engine_);
+            } else {
+                auto t0 = std::chrono::steady_clock::now();
+                rcli_stop_listening(engine_);
+                auto t1 = std::chrono::steady_clock::now();
+                auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+                printf("[Proxy] rcli_stop_listening took %lld ms\n", ms);
+                fflush(stdout);
+            }
             stt_running_ = false;
+            client_audio_mode_ = false;
         }
     }
     
     ProxyConfig config_;
     std::atomic<bool> running_;
     bool stt_running_ = false;
+    bool client_audio_mode_ = false;  // true when client handles VAD
+    std::string last_client_partial_;  // last streaming partial for dedup
+    std::thread audio_broadcast_thread_;
+    std::atomic<bool> audio_broadcast_running_{false};
     int server_fd_;
     int kqueue_fd_;
     RCLIHandle engine_;

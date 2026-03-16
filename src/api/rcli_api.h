@@ -272,6 +272,46 @@ const char* rcli_get_stt_model(RCLIHandle handle);
 // Both output pointers are optional (pass NULL to skip).
 void rcli_get_context_info(RCLIHandle handle, int* out_prompt_tokens, int* out_ctx_size);
 
+// --- Client Audio Capture Support (Proxy Mode) ---
+
+// Feed float32 audio samples to the streaming STT engine (Zipformer).
+// samples: array of float32 values normalized to [-1.0, 1.0], mono, 16kHz.
+// num_samples: number of samples in the array.
+// After feeding, call rcli_stt_get_partial to check for partial results.
+void rcli_stt_feed_audio(RCLIHandle handle, const float* samples, int num_samples);
+
+// Process a streaming STT tick (call after feeding audio).
+// This advances the recognizer and may produce partial/final results.
+void rcli_stt_process_tick(RCLIHandle handle);
+
+// Get the current streaming STT result.
+// out_text: pointer to receive the transcript text (must NOT be freed by caller).
+// out_is_final: pointer to receive finality flag (1=final, 0=partial).
+// Returns 1 if there is a result, 0 if no result available.
+int rcli_stt_get_result(RCLIHandle handle, const char** out_text, int* out_is_final);
+
+// Reset the streaming STT recognizer state.
+void rcli_stt_reset(RCLIHandle handle);
+
+// Transcribe a complete audio buffer using the offline STT engine (Parakeet TDT / Whisper).
+// samples: float32 mono 16kHz audio.
+// num_samples: number of samples.
+// Returns transcript text. Caller must NOT free the returned pointer.
+// Returns empty string if offline STT is not initialized.
+const char* rcli_offline_transcribe(RCLIHandle handle, const float* samples, int num_samples);
+
+// Check if offline STT engine is initialized and available.
+int rcli_has_offline_stt(RCLIHandle handle);
+
+// Read available audio from the capture ring buffer.
+// buf: float32 output buffer to fill.
+// max_samples: capacity of buf.
+// Returns the number of samples actually read (0 if none available).
+int rcli_read_capture_audio(RCLIHandle handle, float* buf, int max_samples);
+
+// Stop audio capture (CoreAudio mic) without stopping STT threads.
+void rcli_stop_capture(RCLIHandle handle);
+
 #ifdef __cplusplus
 }
 #endif

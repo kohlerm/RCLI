@@ -1383,6 +1383,10 @@ void Orchestrator::stt_thread_fn() {
                 // Use RMS-only for activity logs; VAD can report speech on
                 // low-amplitude keyboard/background noise and cause flapping.
                 bool speech_now = (rms > STT_ONLY_LOG_START_FLOOR);
+                
+                // Track speech timing for detailed logging
+                static int64_t speech_start_time_us = 0;
+                
                 if (!stt_only_speaking) {
                     if (speech_now) {
                         stt_only_start_chunks++;
@@ -1393,7 +1397,12 @@ void Orchestrator::stt_thread_fn() {
                             stt_only_speaking_chunks = 0;
                             stt_only_force_finalize_pending = false;
                             stt_only_force_finalize_chunks = 0;
-                            fprintf(stderr, "[Proxy] Speech started (rms=%.5f, vad=%d)\n", rms, vad_speech ? 1 : 0);
+                            speech_start_time_us = now_us();
+                            fprintf(stderr, "[Proxy] ════════════════════════════════════════════\n");
+                            fprintf(stderr, "[Proxy] SPEECH STARTED\n");
+                            fprintf(stderr, "[Proxy]   RMS: %.5f | VAD: %s | Time: %.3fs\n", 
+                                    rms, vad_speech ? "SPEECH" : "SILENCE", speech_start_time_us / 1000000.0);
+                            fprintf(stderr, "[Proxy] ════════════════════════════════════════════\n");
                         }
                     } else {
                         stt_only_start_chunks = 0;
@@ -1402,20 +1411,28 @@ void Orchestrator::stt_thread_fn() {
                     stt_only_silence_chunks = 0;
                     stt_only_speaking_chunks++;
                     if (stt_only_speaking_chunks >= STT_ONLY_FORCE_STOP_CHUNKS) {
+                        int64_t speech_duration_ms = (now_us() - speech_start_time_us) / 1000;
                         stt_only_speaking = false;
                         stt_only_silence_chunks = 0;
                         stt_only_start_chunks = 0;
                         stt_only_speaking_chunks = 0;
-                        fprintf(stderr, "[Proxy] Speech stopped (timeout)\n");
+                        fprintf(stderr, "[Proxy] ════════════════════════════════════════════\n");
+                        fprintf(stderr, "[Proxy] SPEECH STOPPED (timeout - max duration reached)\n");
+                        fprintf(stderr, "[Proxy]   Duration: %ld ms (exceeded 8s limit)\n", speech_duration_ms);
+                        fprintf(stderr, "[Proxy] ════════════════════════════════════════════\n");
                     }
                 } else {
                     stt_only_silence_chunks++;
                     if (stt_only_silence_chunks >= STT_ONLY_STOP_CHUNKS) {
+                        int64_t speech_duration_ms = (now_us() - speech_start_time_us) / 1000;
                         stt_only_speaking = false;
                         stt_only_silence_chunks = 0;
                         stt_only_start_chunks = 0;
                         stt_only_speaking_chunks = 0;
-                        fprintf(stderr, "[Proxy] Speech stopped\n");
+                        fprintf(stderr, "[Proxy] ════════════════════════════════════════════\n");
+                        fprintf(stderr, "[Proxy] SPEECH STOPPED (silence detected)\n");
+                        fprintf(stderr, "[Proxy]   Duration: %ld ms | Final RMS: %.5f\n", speech_duration_ms, rms);
+                        fprintf(stderr, "[Proxy] ════════════════════════════════════════════\n");
 
                         if (!last_partial.empty()) {
                             stt_only_force_finalize_pending = true;

@@ -99,6 +99,15 @@ public:
     ToolEngine& tools() { return tools_; }
     AudioIO&    audio() { return audio_; }
     RingBuffer<float>* playback_ring_buffer() { return playback_rb_.get(); }
+    RingBuffer<float>* capture_ring_buffer() { return capture_rb_.get(); }
+
+    // Stop audio capture without transcribing (for client-VAD mode)
+    void stop_capture() {
+        live_running_.store(false, std::memory_order_release);
+        audio_.stop();
+        capture_rb_->clear();
+        set_state(PipelineState::IDLE);
+    }
 
     // Active LLM backend
     LlmBackend active_llm_backend() const { return active_backend_; }
