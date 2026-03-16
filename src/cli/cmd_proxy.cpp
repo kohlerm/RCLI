@@ -210,9 +210,9 @@ public:
             return 1;
         }
         
-        // Initialize RCLI engine
-        if (!init_engine()) {
-            fprintf(stderr, "Failed to initialize RCLI engine\n");
+        // Initialize RCLI engine for proxy mode (STT + TTS only, no LLM)
+        if (!init_engine_proxy()) {
+            fprintf(stderr, "Failed to initialize RCLI engine for proxy mode\n");
             close(server_fd_);
             return 1;
         }
@@ -317,7 +317,7 @@ public:
     }
     
 private:
-    bool init_engine() {
+    bool init_engine_proxy() {
         // Create engine
         engine_ = rcli_create(nullptr);
         if (!engine_) {
@@ -325,7 +325,7 @@ private:
             return false;
         }
         
-        // Set up callbacks BEFORE rcli_init (init wires them to the pipeline)
+        // Set up callbacks BEFORE rcli_init_proxy (init wires them to the pipeline)
         rcli_set_transcript_callback(engine_, [](const char* text, int is_final, void* user_data) {
             auto* server = static_cast<ProxyServerImpl*>(user_data);
             
@@ -400,9 +400,9 @@ private:
             server->broadcast(msg);
         }, this);
         
-        // Initialize with models (this wires the callbacks to the pipeline)
-        if (rcli_init(engine_, config_.models_dir.c_str(), config_.gpu_layers) != 0) {
-            fprintf(stderr, "Failed to initialize RCLI engine\n");
+        // Initialize for proxy mode (STT + TTS only, no LLM)
+        if (rcli_init_proxy(engine_, config_.models_dir.c_str()) != 0) {
+            fprintf(stderr, "Failed to initialize RCLI engine for proxy mode\n");
             rcli_destroy(engine_);
             engine_ = nullptr;
             return false;

@@ -328,6 +328,73 @@ bool Orchestrator::init(const PipelineConfig& config) {
     return true;
 }
 
+// Initialize for proxy mode (STT, TTS, VAD only - no LLM)
+bool Orchestrator::init_proxy(const PipelineConfig& config) {
+    config_ = config;
+
+    LOG_DEBUG("Pipeline", "Initializing for proxy mode (no LLM)...");
+
+    // 1. Memory pool
+    pool_ = std::make_unique<MemoryPool>(config.memory_pool_size);
+    LOG_DEBUG("Pool", "Allocated %zuMB memory pool", config.memory_pool_size / (1024*1024));
+
+    // 2. Ring buffers (allocated from pool)
+    {
+        float* cap_storage = pool_->alloc<float>(config.audio_ring_capacity);
+        capture_rb_ = std::make_unique<RingBuffer<float>>(cap_storage, config.audio_ring_capacity);
+        LOG_DEBUG("Pool", "Capture ring buffer: %zu samples", config.audio_ring_capacity);
+    }
+    {
+        float* play_storage = pool_->alloc<float>(config.tts_ring_capacity);
+        playback_rb_ = std::make_unique<RingBuffer<float>>(play_storage, config.tts_ring_capacity);
+        LOG_DEBUG("Pool", "Playback ring buffer: %zu samples", config.tts_ring_capacity);
+    }
+
+    LOG_DEBUG("Pool", "Used: %.1fMB / %.1fMB (%.1f%%)",
+            pool_->used_bytes() / (1024.0*1024.0),
+            pool_->total_size() / (1024.0*1024.0),
+            pool_->utilization_pct());
+
+    // Initialize STT engines only
+    if (!stt_.init(config.stt)) {
+        LOG_ERROR("Pipeline", "STT init failed");
+        return false;
+    }
+
+    if (!offline_stt_.init(config.offline_stt)) {
+        LOG_WARN("Pipeline", "Offline STT init failed (will use streaming STT)");
+    }
+
+    // Skip LLM initialization entirely
+    LOG_INFO("Pipeline", "Proxy mode: skipping LLM initialization");
+
+    if (!tts_.init(config.tts)) {
+        LOG_ERROR("Pipeline", "TTS init failed");
+        return false;
+    }
+
+    if (!audio_.init(config.audio, capture_rb_.get(), playback_rb_.get())) {
+        LOG_ERROR("Pipeline", "Audio init failed");
+        return false;
+    }
+
+    if (!vad_.init(config.vad)) {
+        LOG_WARN("Pipeline", "VAD init failed (will process all audio)");
+    }
+
+    // No tools needed in proxy mode
+    active_backend_ = LlmBackend::LLAMACPP;  // Not used, but set for compatibility
+
+    LOG_INFO("Pipeline", "Proxy mode ready (STT + TTS only)");
+    LOG_DEBUG("Pool", "Final usage: %.1fMB / %.1fMB (%.1f%%)",
+            pool_->used_bytes() / (1024.0*1024.0),
+            pool_->total_size() / (1024.0*1024.0),
+            pool_->utilization_pct());
+
+    set_state(PipelineState::IDLE);
+    return true;
+}
+
 // --- File mode pipeline ---
 bool Orchestrator::run_file_pipeline(const std::string& input_wav, const std::string& output_wav) {
     timings_ = PipelineTimings{};

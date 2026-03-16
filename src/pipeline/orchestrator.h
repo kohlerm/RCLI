@@ -63,6 +63,9 @@ public:
     // Initialize all engines
     bool init(const PipelineConfig& config);
 
+    // Initialize for proxy mode (STT, TTS, VAD only - no LLM)
+    bool init_proxy(const PipelineConfig& config);
+
     // --- File mode pipeline ---
     // Run full pipeline on a WAV file
     bool run_file_pipeline(const std::string& input_wav, const std::string& output_wav);

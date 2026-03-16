@@ -49,6 +49,12 @@ void rcli_destroy(RCLIHandle handle);
 // Returns 0 on success, non-zero on failure.
 int rcli_init(RCLIHandle handle, const char* models_dir, int gpu_layers);
 
+// Initialize for proxy mode - STT, TTS, and VAD only (no LLM).
+// Use this when RCLI acts as a voice proxy and an external LLM handles inference.
+// models_dir: path to directory containing model files
+// Returns 0 on success, non-zero on failure.
+int rcli_init_proxy(RCLIHandle handle, const char* models_dir);
+
 // Check if engine is initialized and ready
 int rcli_is_ready(RCLIHandle handle);
 

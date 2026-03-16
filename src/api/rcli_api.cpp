@@ -654,6 +654,175 @@ int rcli_init(RCLIHandle handle, const char* models_dir, int gpu_layers) {
     return 0;
 }
 
+int rcli_init_proxy(RCLIHandle handle, const char* models_dir) {
+    if (!handle || !models_dir) return -1;
+    auto* engine = static_cast<RCLIEngine*>(handle);
+
+    std::string dir(models_dir);
+    engine->models_dir = dir;
+
+    PipelineConfig config;
+
+    // --- STT (Zipformer streaming — always active for live mic) ---
+    config.stt.encoder_path = dir + "/zipformer/encoder-epoch-99-avg-1.int8.onnx";
+    config.stt.decoder_path = dir + "/zipformer/decoder-epoch-99-avg-1.int8.onnx";
+    config.stt.joiner_path  = dir + "/zipformer/joiner-epoch-99-avg-1.int8.onnx";
+    config.stt.tokens_path  = dir + "/zipformer/tokens.txt";
+    config.stt.sample_rate  = 16000;
+    config.stt.num_threads  = 2;
+
+    // --- Offline STT (resolve: user preference > auto-detect highest priority) ---
+    {
+        auto stt_models = rcli::all_stt_models();
+        const auto* active_stt = rcli::resolve_active_stt(dir, stt_models);
+        if (!active_stt) active_stt = rcli::get_default_offline_stt(stt_models);
+
+        if (active_stt && active_stt->backend == "nemo_transducer") {
+            std::string base = dir + "/" + active_stt->dir_name;
+            config.offline_stt.backend = OfflineSttBackend::NEMO_TRANSDUCER;
+            config.offline_stt.transducer_encoder_path = base + "/" + active_stt->encoder_file;
+            config.offline_stt.transducer_decoder_path = base + "/" + active_stt->decoder_file;
+            config.offline_stt.transducer_joiner_path  = base + "/" + active_stt->joiner_file;
+            config.offline_stt.tokens_path  = base + "/" + active_stt->tokens_file;
+            config.offline_stt.sample_rate  = 16000;
+            config.offline_stt.num_threads  = 4;
+            engine->using_parakeet = true;
+            engine->stt_model_name = active_stt->name;
+            LOG_DEBUG("RCLI", "Using %s for offline STT", active_stt->name.c_str());
+        } else if (active_stt) {
+            std::string base = dir + "/" + active_stt->dir_name;
+            config.offline_stt.backend = OfflineSttBackend::WHISPER;
+            config.offline_stt.encoder_path = base + "/" + active_stt->encoder_file;
+            config.offline_stt.decoder_path = base + "/" + active_stt->decoder_file;
+            config.offline_stt.tokens_path  = base + "/" + active_stt->tokens_file;
+            config.offline_stt.language     = "en";
+            config.offline_stt.task         = "transcribe";
+            config.offline_stt.tail_paddings = 500;
+            config.offline_stt.sample_rate  = 16000;
+            config.offline_stt.num_threads  = 4;
+            engine->using_parakeet = false;
+            engine->stt_model_name = active_stt->name;
+            LOG_DEBUG("RCLI", "Using %s for offline STT", active_stt->name.c_str());
+        } else {
+            config.offline_stt.backend = OfflineSttBackend::WHISPER;
+            config.offline_stt.encoder_path = dir + "/whisper-base.en/base.en-encoder.int8.onnx";
+            config.offline_stt.decoder_path = dir + "/whisper-base.en/base.en-decoder.int8.onnx";
+            config.offline_stt.tokens_path  = dir + "/whisper-base.en/base.en-tokens.txt";
+            config.offline_stt.language     = "en";
+            config.offline_stt.task         = "transcribe";
+            config.offline_stt.tail_paddings = 500;
+            config.offline_stt.sample_rate  = 16000;
+            config.offline_stt.num_threads  = 4;
+            engine->using_parakeet = false;
+        }
+    }
+
+    // --- NO LLM for proxy mode ---
+    // Skip LLM initialization entirely - proxy mode uses external LLM
+    config.llm.model_path.clear();  // Empty path signals no LLM
+    config.llm.n_gpu_layers = 0;
+    config.llm.n_ctx = 0;
+    engine->llm_model_name = "(proxy mode - no LLM)";
+    LOG_INFO("RCLI", "Proxy mode: skipping LLM initialization");
+
+    // --- TTS ---
+    {
+        auto tts_models = rcli::all_tts_models();
+        const auto* active_tts = rcli::resolve_active_tts(dir, tts_models);
+        if (!active_tts) {
+            active_tts = rcli::get_default_tts(tts_models);
+        }
+        if (active_tts) {
+            std::string base = dir + "/" + active_tts->dir_name;
+            config.tts.architecture     = active_tts->architecture;
+            config.tts.model_path       = base + "/" + active_tts->model_file;
+            config.tts.tokens_path      = base + "/" + active_tts->tokens_file;
+            config.tts.data_dir         = dir + "/espeak-ng-data";
+            if (!active_tts->config_file.empty())
+                config.tts.model_config_path = base + "/" + active_tts->config_file;
+            if (!active_tts->voices_file.empty())
+                config.tts.voices_path = base + "/" + active_tts->voices_file;
+            if (!active_tts->vocoder_file.empty())
+                config.tts.vocoder_path = base + "/" + active_tts->vocoder_file;
+            if (!active_tts->lexicon_file.empty())
+                config.tts.lexicon_path = base + "/" + active_tts->lexicon_file;
+            if (!active_tts->lang.empty())
+                config.tts.lang = active_tts->lang;
+            engine->tts_model_name = active_tts->name;
+            LOG_DEBUG("RCLI", "Using TTS: %s (%s)", active_tts->name.c_str(),
+                      active_tts->architecture.c_str());
+        } else {
+            config.tts.architecture      = "vits";
+            config.tts.model_path        = dir + "/piper-voice/en_US-lessac-medium.onnx";
+            config.tts.model_config_path = dir + "/piper-voice/en_US-lessac-medium.onnx.json";
+            config.tts.tokens_path       = dir + "/piper-voice/tokens.txt";
+            config.tts.data_dir          = dir + "/espeak-ng-data";
+        }
+        config.tts.num_threads = 2;
+        config.tts.speed       = 1.1f;
+    }
+
+    // --- VAD ---
+    config.vad.model_path           = dir + "/silero_vad.onnx";
+    config.vad.threshold            = 0.5f;
+    config.vad.min_silence_duration = 0.5f;
+    config.vad.min_speech_duration  = 0.25f;
+    config.vad.window_size          = 512;
+    config.vad.sample_rate          = 16000;
+    config.vad.num_threads          = 1;
+
+    // --- Audio mode ---
+    config.audio.capture_rate  = 16000;
+    config.audio.playback_rate = 22050;
+#if defined(RASTACK_FILE_AUDIO_ONLY)
+    config.audio.mode = AudioMode::FILE_MODE;
+#else
+    config.audio.mode = AudioMode::LIVE_MODE;
+#endif
+
+    // --- System prompt (not used in proxy mode, but set for compatibility) ---
+    engine->personality_key = "default";
+    config.system_prompt = "Proxy mode - no LLM";
+
+    LOG_DEBUG("RCLI", "Initializing pipeline for proxy mode (no LLM)...");
+    // Suppress sherpa-onnx's noisy stderr validation messages during init
+    int saved_stderr = dup(STDERR_FILENO);
+    {
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) { dup2(devnull, STDERR_FILENO); close(devnull); }
+    }
+    bool init_ok = engine->pipeline.init_proxy(config);
+    if (saved_stderr >= 0) { dup2(saved_stderr, STDERR_FILENO); close(saved_stderr); }
+    if (!init_ok) {
+        LOG_ERROR("RCLI", "Failed to initialize pipeline for proxy mode");
+        return -1;
+    }
+
+    // Wire up state callback
+    if (engine->state_cb) {
+        engine->pipeline.set_state_callback(
+            [engine](PipelineState old_s, PipelineState new_s) {
+                engine->state_cb(static_cast<int>(old_s), static_cast<int>(new_s), engine->state_ud);
+            });
+    }
+
+    // Wire up transcript callback (STT partials + finals in live mode)
+    if (engine->transcript_cb) {
+        engine->pipeline.set_transcript_callback(
+            [engine](const std::string& text, bool is_final) {
+                engine->last_transcript = text;
+                engine->transcript_cb(text.c_str(), is_final ? 1 : 0, engine->transcript_ud);
+            });
+    }
+
+    engine->initialized = true;
+    engine->ctx_main_prompt_tokens = 0;  // No LLM context in proxy mode
+
+    LOG_DEBUG("RCLI", "Initialized proxy mode with %s, %s",
+              engine->stt_model_name.c_str(), engine->tts_model_name.c_str());
+    return 0;
+}
+
 int rcli_is_ready(RCLIHandle handle) {
     if (!handle) return 0;
     auto* engine = static_cast<RCLIEngine*>(handle);
